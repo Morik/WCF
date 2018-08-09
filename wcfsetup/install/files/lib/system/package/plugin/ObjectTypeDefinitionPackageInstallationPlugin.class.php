@@ -1,7 +1,15 @@
 <?php
 namespace wcf\system\package\plugin;
 use wcf\data\object\type\definition\ObjectTypeDefinitionEditor;
-use wcf\system\devtools\pip\IIdempotentPackageInstallationPlugin;
+use wcf\data\object\type\ObjectTypeCache;
+use wcf\system\devtools\pip\IDevtoolsPipEntryList;
+use wcf\system\devtools\pip\IGuiPackageInstallationPlugin;
+use wcf\system\devtools\pip\TXmlGuiPackageInstallationPlugin;
+use wcf\system\form\builder\container\FormContainer;
+use wcf\system\form\builder\field\validation\FormFieldValidationError;
+use wcf\system\form\builder\field\validation\FormFieldValidator;
+use wcf\system\form\builder\field\TextFormField;
+use wcf\system\form\builder\IFormDocument;
 use wcf\system\WCF;
 
 /**
@@ -12,7 +20,9 @@ use wcf\system\WCF;
  * @license	GNU Lesser General Public License <http://opensource.org/licenses/lgpl-license.php>
  * @package	WoltLabSuite\Core\Acp\Package\Plugin
  */
-class ObjectTypeDefinitionPackageInstallationPlugin extends AbstractXMLPackageInstallationPlugin implements IIdempotentPackageInstallationPlugin {
+class ObjectTypeDefinitionPackageInstallationPlugin extends AbstractXMLPackageInstallationPlugin implements IGuiPackageInstallationPlugin {
+	use TXmlGuiPackageInstallationPlugin;
+	
 	/**
 	 * @inheritDoc
 	 */
@@ -67,8 +77,172 @@ class ObjectTypeDefinitionPackageInstallationPlugin extends AbstractXMLPackageIn
 	
 	/**
 	 * @inheritDoc
+	 * @since	3.1
 	 */
 	public static function getSyncDependencies() {
 		return [];
+	}
+	
+	/**
+	 * @inheritDoc
+	 * @since	3.2
+	 */
+	public function addFormFields(IFormDocument $form) {
+		/** @var FormContainer $dataContainer */
+		$dataContainer = $form->getNodeById('data');
+		
+		$dataContainer->appendChildren([
+			TextFormField::create('name')
+				->label('wcf.acp.pip.objectTypeDefinition.definitionName')
+				->description('wcf.acp.pip.objectTypeDefinition.definitionName.description', ['project' => $this->installation->getProject()])
+				->required()
+				->addValidator(new FormFieldValidator('format', function(TextFormField $formField) {
+					if ($formField->getValue()) {
+						$segments = explode('.', $formField->getValue());
+						if (count($segments) < 4) {
+							$formField->addValidationError(
+								new FormFieldValidationError(
+									'tooFewSegments',
+									'wcf.acp.pip.objectTypeDefinition.definitionName.error.tooFewSegments',
+									['segmentCount' => count($segments)]
+								)
+							);
+						}
+						else {
+							$invalidSegments = [];
+							foreach ($segments as $key => $segment) {
+								if (!preg_match('~^[A-z0-9\-\_]+$~', $segment)) {
+									$invalidSegments[$key] = $segment;
+								}
+							}
+							
+							if (!empty($invalidSegments)) {
+								$formField->addValidationError(
+									new FormFieldValidationError(
+										'invalidSegments',
+										'wcf.acp.pip.objectTypeDefinition.definitionName.error.invalidSegments',
+										['invalidSegments' => $invalidSegments]
+									)
+								);
+							}
+						}
+					}
+				}))
+				->addValidator(new FormFieldValidator('uniqueness', function(TextFormField $formField) {
+					if ($formField->getValue()) {
+						$objectTypeDefinition = ObjectTypeCache::getInstance()->getDefinitionByName($formField->getValue());
+						
+						// the definition name is not unique if such an object type definition
+						// already exists and (a) a new definition is added or (b) an existing
+						// definition is edited but the new definition name is not the old definition
+						// name so that the existing definition is not the definition currently edited
+						if ($objectTypeDefinition !== null && (
+							$formField->getDocument()->getFormMode() === IFormDocument::FORM_MODE_CREATE ||
+							$this->editedEntry->getElementsByTagName('name')->item(0)->nodeValue !== $formField->getValue()
+						)) {
+							$formField->addValidationError(
+								new FormFieldValidationError(
+									'notUnique',
+									'wcf.acp.pip.objectTypeDefinition.definitionName.error.notUnique'
+								)
+							);
+						}
+					}
+				})),
+			
+			TextFormField::create('interfaceName')
+				->objectProperty('interfacename')
+				->label('wcf.acp.pip.objectTypeDefinition.interfaceName')
+				->description('wcf.acp.pip.objectTypeDefinition.interfaceName.description')
+				->addValidator(new FormFieldValidator('interfaceExists', function(TextFormField $formField) {
+					if ($formField->getValue() && !interface_exists($formField->getValue())) {
+						$formField->addValidationError(
+							new FormFieldValidationError(
+								'nonExistent',
+								'wcf.acp.pip.objectTypeDefinition.interfaceName.error.nonExistent'
+							)
+						);
+					}
+				}))
+		]);
+	}
+	
+	/**
+	 * @inheritDoc
+	 * @since	3.2
+	 */
+	protected function getElementData(\DOMElement $element, $saveData = false) {
+		$data = [
+			'definitionName' => $element->getElementsByTagName('name')->item(0)->nodeValue,
+			'packageID' => $this->installation->getPackage()->packageID
+		];
+		
+		$interfaceName = $element->getElementsByTagName('interfacename')->item(0);
+		if ($interfaceName) {
+			$data['interfaceName'] = $interfaceName->nodeValue;
+		}
+		
+		return $data;
+	}
+	
+	/**
+	 * @inheritDoc
+	 * @since	3.2
+	 */
+	public function getElementIdentifier(\DOMElement $element) {
+		return $element->getElementsByTagName('name')->item(0)->nodeValue;
+	}
+	
+	/**
+	 * @inheritDoc
+	 * @since	3.2
+	 */
+	protected function setEntryListKeys(IDevtoolsPipEntryList $entryList) {
+		$entryList->setKeys([
+			'definitionName' => 'wcf.acp.pip.objectTypeDefinition.definitionName',
+			'interfaceName' => 'wcf.acp.pip.objectTypeDefinition.interfaceName'
+		]);
+	}
+	
+	/**
+	 * @inheritDoc
+	 * @since	3.2
+	 */
+	protected function sortDocument(\DOMDocument $document) {
+		$this->sortImportDelete($document);
+		
+		$this->sortChildNodes($document->getElementsByTagName('import'), function(\DOMElement $element1, \DOMElement $element2) {
+			return strcmp(
+				$element1->getElementsByTagName('name')->item(0)->nodeValue,
+				$element2->getElementsByTagName('name')->item(0)->nodeValue
+			);
+		});
+		
+		$this->sortChildNodes($document->getElementsByTagName('delete'), function(\DOMElement $element1, \DOMElement $element2) {
+			return strcmp(
+				$element1->getAttribute('name'),
+				$element2->getAttribute('name')
+			);
+		});
+	}
+	
+	/**
+	 * @inheritDoc
+	 * @since	3.2
+	 */
+	protected function writeEntry(\DOMDocument $document, IFormDocument $form) {
+		$data = $form->getData()['data'];
+		
+		$definition = $document->createElement('definition');
+		$definition->appendChild($document->createElement('name', $data['name']));
+		
+		if (!empty($data['interfacename'])) {
+			$definition->appendChild($document->createElement('interfacename', $data['interfacename']));
+		}
+		
+		$import = $document->getElementsByTagName('import')->item(0);
+		$import->appendChild($definition);
+		
+		return $definition;
 	}
 }

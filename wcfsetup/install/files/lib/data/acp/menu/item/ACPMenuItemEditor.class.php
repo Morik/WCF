@@ -1,6 +1,8 @@
 <?php
 namespace wcf\data\acp\menu\item;
 use wcf\data\DatabaseObjectEditor;
+use wcf\data\IEditableCachedObject;
+use wcf\system\cache\builder\ACPMenuCacheBuilder;
 
 /**
  * Provides functions to edit ACP menu items.
@@ -14,9 +16,16 @@ use wcf\data\DatabaseObjectEditor;
  * @method		ACPMenuItem	getDecoratedObject()
  * @mixin		ACPMenuItem
  */
-class ACPMenuItemEditor extends DatabaseObjectEditor {
+class ACPMenuItemEditor extends DatabaseObjectEditor implements IEditableCachedObject {
 	/**
 	 * @inheritDoc
 	 */
 	protected static $baseClass = ACPMenuItem::class;
+	
+	/**
+	 * @inheritDoc
+	 */
+	public static function resetCache() {
+		ACPMenuCacheBuilder::getInstance()->reset();
+	}
 }

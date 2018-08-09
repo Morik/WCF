@@ -1,21 +1,39 @@
 <?php
 namespace wcf\system\package\plugin;
+use wcf\data\object\type\ObjectTypeCache;
 use wcf\data\user\notification\event\UserNotificationEvent;
 use wcf\data\user\notification\event\UserNotificationEventEditor;
-use wcf\system\devtools\pip\IIdempotentPackageInstallationPlugin;
+use wcf\data\user\notification\event\UserNotificationEventList;
+use wcf\system\devtools\pip\IDevtoolsPipEntryList;
+use wcf\system\devtools\pip\IGuiPackageInstallationPlugin;
+use wcf\system\devtools\pip\TXmlGuiPackageInstallationPlugin;
 use wcf\system\exception\SystemException;
+use wcf\system\form\builder\container\FormContainer;
+use wcf\system\form\builder\field\OptionFormField;
+use wcf\system\form\builder\field\UserGroupOptionFormField;
+use wcf\system\form\builder\field\validation\FormFieldValidationError;
+use wcf\system\form\builder\field\validation\FormFieldValidator;
+use wcf\system\form\builder\field\BooleanFormField;
+use wcf\system\form\builder\field\ClassNameFormField;
+use wcf\system\form\builder\field\ItemListFormField;
+use wcf\system\form\builder\field\SingleSelectionFormField;
+use wcf\system\form\builder\field\TextFormField;
+use wcf\system\form\builder\IFormDocument;
+use wcf\system\user\notification\event\IUserNotificationEvent;
 use wcf\system\WCF;
 use wcf\util\StringUtil;
 
 /**
  * Installs, updates and deletes user notification events.
  * 
- * @author	Marcel Werk
+ * @author	Matthias Schmidt, Marcel Werk
  * @copyright	2001-2018 WoltLab GmbH
  * @license	GNU Lesser General Public License <http://opensource.org/licenses/lgpl-license.php>
  * @package	WoltLabSuite\Core\System\Package\Plugin
  */
-class UserNotificationEventPackageInstallationPlugin extends AbstractXMLPackageInstallationPlugin implements IIdempotentPackageInstallationPlugin {
+class UserNotificationEventPackageInstallationPlugin extends AbstractXMLPackageInstallationPlugin implements IGuiPackageInstallationPlugin {
+	use TXmlGuiPackageInstallationPlugin;
+	
 	/**
 	 * @inheritDoc
 	 */
@@ -152,8 +170,225 @@ class UserNotificationEventPackageInstallationPlugin extends AbstractXMLPackageI
 	
 	/**
 	 * @inheritDoc
+	 * @since	3.1
 	 */
 	public static function getSyncDependencies() {
 		return ['objectType'];
+	}
+	
+	/**
+	 * @inheritDoc
+	 * @since	3.2
+	 */
+	public function addFormFields(IFormDocument $form) {
+		/** @var FormContainer $dataContainer */
+		$dataContainer = $form->getNodeById('data');
+		
+		$dataContainer->appendChildren([
+			TextFormField::create('name')
+				->label('wcf.acp.pip.userNotificationEvent.name')
+				->description('wcf.acp.pip.userNotificationEvent.name.description')
+				->required()
+				->addValidator(new FormFieldValidator('format', function(TextFormField $formField) {
+					if (!preg_match('~^[a-z][A-z]+$~', $formField->getValue())) {
+						$formField->addValidationError(
+							new FormFieldValidationError(
+								'format',
+								'wcf.acp.pip.userNotificationEvent.name.error.format'
+							)
+						);
+					}
+				})),
+			
+			SingleSelectionFormField::create('objectType')
+				->objectProperty('objecttype')
+				->label('wcf.acp.pip.userNotificationEvent.objectType')
+				->description('wcf.acp.pip.userNotificationEvent.objectType.description')
+				->required()
+				->options(function() {
+					$options = [];
+					foreach (ObjectTypeCache::getInstance()->getObjectTypes('com.woltlab.wcf.notification.objectType') as $objectType) {
+						$options[$objectType->objectType] = $objectType->objectType;
+					}
+					
+					asort($options);
+					
+					return $options;
+				})
+				// validate the uniqueness of the `name` field after knowing that the selected object type is valid
+				->addValidator(new FormFieldValidator('nameUniqueness', function(SingleSelectionFormField $formField) {
+					/** @var TextFormField $nameField */
+					$nameField = $formField->getDocument()->getNodeById('name');
+					
+					if ($formField->getDocument()->getFormMode() === IFormDocument::FORM_MODE_CREATE || $this->editedEntry->getAttribute('name') !== $nameField->getSaveValue()) {
+						$eventList = new UserNotificationEventList();
+						$eventList->getConditionBuilder()->add('user_notification_event.eventName = ?', [$nameField->getSaveValue()]);
+						$eventList->getConditionBuilder()->add(
+							'user_notification_event.objectTypeID = ?',
+							[ObjectTypeCache::getInstance()->getObjectTypeByName('com.woltlab.wcf.notification.objectType', $formField->getSaveValue())->objectTypeID]
+						);
+						
+						if ($eventList->countObjects() > 0) {
+							$nameField->addValidationError(
+								new FormFieldValidationError(
+									'notUnique',
+									'wcf.acp.pip.userNotificationEvent.name.error.notUnique'
+								)
+							);
+						}
+					}
+				})),
+			
+			ClassNameFormField::create()
+				->objectProperty('classname')
+				->required()
+				->implementedInterface(IUserNotificationEvent::class),
+			
+			BooleanFormField::create('preset')
+				->label('wcf.acp.pip.userNotificationEvent.preset')
+				->description('wcf.acp.pip.userNotificationEvent.preset.description'),
+			
+			OptionFormField::create()
+				->description('wcf.acp.pip.userNotificationEvent.options.description')
+				->packageIDs(array_merge(
+					[$this->installation->getPackage()->packageID],
+					array_keys($this->installation->getPackage()->getAllRequiredPackages())
+				)),
+			
+			UserGroupOptionFormField::create()
+				->description('wcf.acp.pip.userNotificationEvent.permissions.description')
+				->packageIDs(array_merge(
+					[$this->installation->getPackage()->packageID],
+					array_keys($this->installation->getPackage()->getAllRequiredPackages())
+				)),
+			
+			SingleSelectionFormField::create('presetMailNotificationType')
+				->objectProperty('presetmailnotificationtype')
+				->label('wcf.acp.pip.userNotificationEvent.presetMailNotificationType')
+				->description('wcf.acp.pip.userNotificationEvent.presetMailNotificationType.description')
+				->nullable()
+				->options([
+					'' => 'wcf.user.notification.mailNotificationType.none',
+					'daily' => 'wcf.user.notification.mailNotificationType.daily',
+					'instant' => 'wcf.user.notification.mailNotificationType.instant'
+				])
+		]);
+	}
+	
+	/**
+	 * @inheritDoc
+	 * @since	3.2
+	 */
+	protected function getElementData(\DOMElement $element, $saveData = false) {
+		$data = [
+			'className' => $element->getElementsByTagName('classname')->item(0)->nodeValue,
+			'objectTypeID' => $this->getObjectTypeID($element->getElementsByTagName('objecttype')->item(0)->nodeValue),
+			'eventName' => $element->getElementsByTagName('name')->item(0)->nodeValue,
+			'packageID' => $this->installation->getPackage()->packageID,
+			'preset' => 0
+		];
+		
+		$options = $element->getElementsByTagName('options')->item(0);
+		if ($options) {
+			$data['options'] = StringUtil::normalizeCsv($options->nodeValue);
+		}
+		
+		$permissions = $element->getElementsByTagName('permissions')->item(0);
+		if ($permissions) {
+			$data['permissions'] = StringUtil::normalizeCsv($permissions->nodeValue);
+		}
+		
+		// the presence of a `preset` element is treated as `<preset>1</preset>
+		if ($element->getElementsByTagName('preset')->length === 1) {
+			$data['preset'] = 1;
+		}
+		
+		$presetMailNotificationType = $element->getElementsByTagName('presetmailnotificationtype')->item(0);
+		if ($presetMailNotificationType && in_array($presetMailNotificationType->nodeValue, ['instant', 'daily'])) {
+			$data['presetMailNotificationType'] = $presetMailNotificationType->nodeValue;
+		}
+		
+		return $data;
+	}
+	
+	/**
+	 * @inheritDoc
+	 * @since	3.2
+	 */
+	public function getElementIdentifier(\DOMElement $element) {
+		return sha1(
+			$element->getElementsByTagName('name')->item(0)->nodeValue . '/' .
+			$element->getElementsByTagName('objecttype')->item(0)->nodeValue
+		);
+	}
+	
+	/**
+	 * @inheritDoc
+	 * @since	3.2
+	 */
+	protected function setEntryListKeys(IDevtoolsPipEntryList $entryList) {
+		$entryList->setKeys([
+			'name' => 'wcf.acp.pip.userNotificationEvent.name',
+			'className' => 'wcf.acp.pip.userNotificationEvent.className'
+		]);
+	}
+	
+	/**
+	 * @inheritDoc
+	 * @since	3.2
+	 */
+	protected function sortDocument(\DOMDocument $document) {
+		$this->sortImportDelete($document);
+		
+		$compareFunction = function(\DOMElement $element1, \DOMElement $element2) {
+			$objectType1 = $element1->getElementsByTagName('objecttype')->item(0)->nodeValue;
+			$objectType2 = $element2->getElementsByTagName('objecttype')->item(0)->nodeValue;
+			
+			if ($objectType1 !== $objectType2) {
+				return strcmp($objectType1, $objectType2);
+			}
+			
+			return strcmp(
+				$element1->getElementsByTagName('name')->item(0)->nodeValue,
+				$element2->getElementsByTagName('name')->item(0)->nodeValue
+			);
+		};
+		
+		$this->sortChildNodes($document->getElementsByTagName('import'), $compareFunction);
+		$this->sortChildNodes($document->getElementsByTagName('delete'), $compareFunction);
+	}
+	
+	/**
+	 * @inheritDoc
+	 * @since	3.2
+	 */
+	protected function writeEntry(\DOMDocument $document, IFormDocument $form) {
+		$data = $form->getData()['data'];
+		
+		$event = $document->createElement($this->tagName);
+		
+		foreach (['name', 'objecttype', 'classname'] as $element) {
+			$event->appendChild(
+				$document->createElement(
+					$element,
+					(string)$data[$element]
+				)
+			);
+		}
+		
+		foreach (['options', 'permissions', 'preset', 'presetmailnotificationtype'] as $optionalElement) {
+			if (!empty($data[$optionalElement])) {
+				$event->appendChild(
+					$document->createElement(
+						$optionalElement,
+						(string)$data[$optionalElement]
+					)
+				);
+			}
+		}
+		
+		$document->getElementsByTagName('import')->item(0)->appendChild($event);
+		
+		return $event;
 	}
 }

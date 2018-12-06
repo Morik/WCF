@@ -18,7 +18,7 @@ define(['Ajax', 'Dictionary', 'Language', 'Ui/Dialog'], function (Ajax, Dictiona
 				_container.classList.toggle('jsShowOnlyMatches');
 			});
 			
-			var knownPips = [], tmpPips = [];
+			var knownPips = [], usedPips = [], tmpPips = [];
 			elBySelAll('.jsHasPipTargets:not(.jsSkipTargetDetection)', _container, (function (pip) {
 				var pluginName = elData(pip, 'plugin-name');
 				var targets = [];
@@ -45,6 +45,8 @@ define(['Ajax', 'Dictionary', 'Language', 'Ui/Dialog'], function (Ajax, Dictiona
 					targets: targets
 				};
 				
+				usedPips.push(pluginName);
+				
 				if (data.dependencies.length > 0) {
 					tmpPips.push(data);
 				}
@@ -63,7 +65,7 @@ define(['Ajax', 'Dictionary', 'Language', 'Ui/Dialog'], function (Ajax, Dictiona
 					item = tmpPips[i];
 					
 					openDependencies = item.dependencies.filter(function (dependency) {
-						return (knownPips.indexOf(dependency) === -1);
+						return (knownPips.indexOf(dependency) === -1 && usedPips.indexOf(dependency) > -1);
 					});
 					
 					if (openDependencies.length === 0) {
